@@ -1,2676 +1,400 @@
+function [z, a, b, alpha] = fitellipse(x, varargin)
+%FITELLIPSE   least squares fit of ellipse to 2D data
+%
+%   [Z, A, B, ALPHA] = FITELLIPSE(X)
+%       Fit an ellipse to the 2D points in the 2xN array X. The ellipse is
+%       returned in parametric form such that the equation of the ellipse
+%       parameterised by 0 <= theta < 2*pi is:
+%           X = Z + Q(ALPHA) * [A * cos(theta); B * sin(theta)]
+%       where Q(ALPHA) is the rotation matrix
+%           Q(ALPHA) = [cos(ALPHA), -sin(ALPHA); 
+%                       sin(ALPHA), cos(ALPHA)]
+%
+%       Fitting is performed by nonlinear least squares, optimising the
+%       squared sum of orthogonal distances from the points to the fitted
+%       ellipse. The initial guess is calculated by a linear least squares
+%       routine, by default using the Bookstein constraint (see below)
+%
+%   [...]            = FITELLIPSE(X, 'linear')
+%       Fit an ellipse using linear least squares. The conic to be fitted
+%       is of the form
+%           x'Ax + b'x + c = 0
+%       and the algebraic error is minimised by least squares with the
+%       Bookstein constraint (lambda_1^2 + lambda_2^2 = 1, where 
+%       lambda_i are the eigenvalues of A)
+%
+%   [...]            = FITELLIPSE(..., 'Property', 'value', ...)
+%       Specify property/value pairs to change problem parameters
+%          Property                  Values
+%          =================================
+%          'constraint'              {|'bookstein'|, 'trace'}
+%                                    For the linear fit, the following
+%                                    quadratic form is considered
+%                                    x'Ax + b'x + c = 0. Different
+%                                    constraints on the parameters yield
+%                                    different fits. Both 'bookstein' and
+%                                    'trace' are Euclidean-invariant
+%                                    constraints on the eigenvalues of A,
+%                                    meaning the fit will be invariant
+%                                    under Euclidean transformations
+%                                    'bookstein': lambda1^2 + lambda2^2 = 1
+%                                    'trace'    : lambda1 + lambda2     = 1
+%
+%           Nonlinear Fit Property   Values
+%           ===============================
+%           'maxits'                 positive integer, default 200
+%                                    Maximum number of iterations for the
+%                                    Gauss Newton step
+%
+%           'tol'                    positive real, default 1e-5
+%                                    Relative step size tolerance
+%   Example:
+%       % A set of points
+%       x = [1 2 5 7 9 6 3 8; 
+%            7 6 8 7 5 7 2 4];
+% 
+%       % Fit an ellipse using the Bookstein constraint
+%       [zb, ab, bb, alphab] = fitellipse(x, 'linear');
+%
+%       % Find the least squares geometric estimate       
+%       [zg, ag, bg, alphag] = fitellipse(x);
+%       
+%       % Plot the results
+%       plot(x(1,:), x(2,:), 'ro')
+%       hold on
+%       % plotellipse(zb, ab, bb, alphab, 'b--')
+%       % plotellipse(zg, ag, bg, alphag, 'k')
+% 
+%   See also PLOTELLIPSE
 
-unrar 0.0.1  Copyright (C) 2004  Ben Asselstine, Jeroen Dekkers
+% Copyright Richard Brown, this code can be freely used and modified so
+% long as this line is retained
+error(nargchk(1, 5, nargin, 'struct'))
+
+% Default parameters
+params.fNonlinear = true;
+params.constraint = 'bookstein';
+params.maxits     = 200;
+params.tol        = 1e-5;
+
+% Parse inputs
+[x, params] = parseinputs(x, params, varargin{:});
+
+% Constraints are Euclidean-invariant, so improve conditioning by removing
+% centroid
+centroid = mean(x, 2);
+x        = x - repmat(centroid, 1, size(x, 2));
+
+% Obtain a linear estimate
+switch params.constraint
+    % Bookstein constraint : lambda_1^2 + lambda_2^2 = 1
+    case 'bookstein'
+        [z, a, b, alpha] = fitbookstein(x);
+        
+    % 'trace' constraint, lambda1 + lambda2 = trace(A) = 1
+    case 'trace'
+        [z, a, b, alpha] = fitggk(x);
+end % switch
+
+% Minimise geometric error using nonlinear least squares if required
+if params.fNonlinear
+    % Initial conditions
+    z0     = z;
+    a0     = a;
+    b0     = b;
+    alpha0 = alpha;
+    
+    % Apply the fit
+    [z, a, b, alpha, fConverged] = ...
+        fitnonlinear(x, z0, a0, b0, alpha0, params);
+    
+    % Return linear estimate if GN doesn't converge
+    if ~fConverged
+        warning('fitellipse:FailureToConverge', ...'
+            'Gauss-Newton did not converge, returning linear estimate');
+        z = z0;
+        a = a0;
+        b = b0;
+        alpha = alpha0;
+    end
+end
+
+% Add the centroid back on
+z = z + centroid;
+
+end % fitellipse
+
+% ----END MAIN FUNCTION-----------%
+
+function [z, a, b, alpha] = fitbookstein(x)
+%FITBOOKSTEIN   Linear ellipse fit using bookstein constraint
+%   lambda_1^2 + lambda_2^2 = 1, where lambda_i are the eigenvalues of A
+
+% Convenience variables
+m  = size(x, 2);
+x1 = x(1, :)';
+x2 = x(2, :)';
+
+% Define the coefficient matrix B, such that we solve the system
+% B *[v; w] = 0, with the constraint norm(w) == 1
+B = [x1, x2, ones(m, 1), x1.^2, sqrt(2) * x1 .* x2, x2.^2];
+
+% To enforce the constraint, we need to take the QR decomposition
+[Q, R] = qr(B);
+
+% Decompose R into blocks
+R11 = R(1:3, 1:3);
+R12 = R(1:3, 4:6);
+R22 = R(4:6, 4:6);
+
+% Solve R22 * w = 0 subject to norm(w) == 1
+[U, S, V] = svd(R22);
+w = V(:, 3);
+
+% Solve for the remaining variables
+v = -R11 \ R12 * w;
+
+% Fill in the quadratic form
+A        = zeros(2);
+A(1)     = w(1);
+A([2 3]) = 1 / sqrt(2) * w(2);
+A(4)     = w(3);
+bv       = v(1:2);
+c        = v(3);
+
+% Find the parameters
+[z, a, b, alpha] = conic2parametric(A, bv, c);
+
+end % fitellipse
 
 
-Extracting from /home/seyyah/proje/3bal/emre/1bgextract-EMRE.rar
+function [z, a, b, alpha] = fitggk(x)
+% Linear least squares with the Euclidean-invariant constraint Trace(A) = 1
 
-Skipping    1bgextract-EMRE/bgmodel.m                                           
-Skipping    1bgextract-EMRE/bg_color.m                                          
-Skipping    1bgextract-EMRE/bg_edge.m                                           
-Skipping    1bgextract-EMRE/bw2silh.m                                           
-Skipping    1bgextract-EMRE/bwscrop.m                                           
-Skipping    1bgextract-EMRE/bwsresize.m                                         
-Skipping    1bgextract-EMRE/centralisedmoment.m                                 
-Skipping    1bgextract-EMRE/centreofmass.m                                      
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/lqf-00_1-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e01/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e02/xch-00_4-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-003.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-004.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/ljg-00_1-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e03/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/nhz-00_1-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e04/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/lqf-00_4-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e05/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-003.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-004.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e06/yjf-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e07/zyf-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/lqf-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e08/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e09/zyf-00_4-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/ljg-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e10/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-004.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/nhz-00_2-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e11/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/nhz-00_3-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e12/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-004.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/nhz-00_4-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e13/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e14/xch-00_2-056.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-002.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-003.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-004.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-005.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-006.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-007.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-008.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-009.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-010.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-011.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-012.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e15/yjf-00_2-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/erkek/e16/yjf-00_4-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-013.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-014.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-015.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/fyc-00_1-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k01/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-056.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/fyc-00_2-057.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k02/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-016.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-017.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-018.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-019.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-020.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-021.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-022.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-023.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-024.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-025.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-026.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-027.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-028.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-029.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-030.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-031.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-032.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-033.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/fyc-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k03/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-034.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-035.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-036.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-037.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-056.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-057.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-058.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-059.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-060.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/fyc-00_4-061.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k04/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-010.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-011.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-012.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-013.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-014.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-015.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-016.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-017.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-018.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-019.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-020.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-021.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-022.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/hy-00_1-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k05/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-038.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-039.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-040.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-041.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-042.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-043.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-044.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-045.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-046.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-047.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-048.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-049.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-050.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-051.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-052.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-053.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/hy-00_2-054.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k06/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-017.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-018.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-019.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-020.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-021.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-022.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-038.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-039.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-040.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-041.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-042.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-043.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/hy-00_3-044.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k07/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-038.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-039.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-040.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-041.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-042.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-043.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-044.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-045.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-046.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-047.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-048.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-049.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-050.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-051.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/hy-00_4-052.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k08/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-005.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-006.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-007.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-008.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-009.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-010.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-011.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-012.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-013.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-014.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-015.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-016.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-017.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-018.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-019.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-020.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-021.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-022.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/rj-00_1-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k09/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-038.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-039.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-040.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-041.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-042.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-043.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-044.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-045.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-046.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-047.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/rj-00_2-048.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k10/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-012.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-013.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-014.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-015.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-016.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-017.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-018.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-019.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-020.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-021.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-022.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/rj-00_3-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k11/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-022.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-023.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-024.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-025.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-026.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-027.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-028.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-029.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-030.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-031.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-032.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-033.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-034.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-035.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-036.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-037.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-038.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-039.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-040.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-041.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-042.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-043.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-044.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-045.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-046.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-047.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/rj-00_4-048.png            
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k12/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-038.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-056.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-057.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-058.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-059.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-060.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-061.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-062.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-063.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-064.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k13/xxj-00_1-065.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/Thumbs.db                  
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-039.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-040.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-041.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-042.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-043.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-044.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-045.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-046.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-047.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-048.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-049.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-050.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-051.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-052.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-053.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-054.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-055.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-056.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-057.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-058.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-059.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-060.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-061.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-062.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-063.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-064.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-065.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-066.png           
-Skipping    1bgextract-EMRE/cinsiyete gore/kadin/k14/xxj-00_3-067.png           
-Skipping    1bgextract-EMRE/compute_RdeltaG.m                                   
-Skipping    1bgextract-EMRE/conf2bw.m                                           
-Skipping    1bgextract-EMRE/cycle_crop.m                                        
-Skipping    1bgextract-EMRE/demo_gait_analysis.m                                
-Skipping    1bgextract-EMRE/dist_euclid.m                                       
-Skipping    1bgextract-EMRE/ellipse.m                                           
-Skipping    1bgextract-EMRE/extrema.m                                           
-Skipping    1bgextract-EMRE/fark2conf.m                                         
-Skipping    1bgextract-EMRE/fextract.m                                          
-Skipping    1bgextract-EMRE/fe_gatech.m                                         
-Skipping    1bgextract-EMRE/fe_mit.m                                            
-Skipping    1bgextract-EMRE/fe_ppelvis.m                                        
-Extracting  1bgextract-EMRE/fitellipse.m                              Failed    
-Skipping    1bgextract-EMRE/frm2bw_db.m                                         
-Skipping    1bgextract-EMRE/frm2confC.m                                         
-Skipping    1bgextract-EMRE/frm2confE.m                                         
-Skipping    1bgextract-EMRE/frm2nimg.m                                          
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/lqf-00_1-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e01/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e02/xch-00_4-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-003.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-004.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/ljg-00_1-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e03/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/nhz-00_1-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e04/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/lqf-00_4-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e05/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-003.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-004.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e06/yjf-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e07/zyf-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/lqf-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e08/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e09/zyf-00_4-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/ljg-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e10/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-004.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/nhz-00_2-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e11/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/nhz-00_3-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e12/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-004.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/nhz-00_4-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e13/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e14/xch-00_2-056.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-002.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-003.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-004.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-005.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-006.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-007.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-008.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-009.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-010.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-011.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-012.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e15/yjf-00_2-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/e16/yjf-00_4-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-013.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-014.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-015.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/fyc-00_1-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k01/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-056.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/fyc-00_2-057.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k02/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-016.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-017.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-018.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-019.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-020.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-021.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-022.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-023.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-024.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-025.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-026.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-027.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-028.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-029.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-030.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-031.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-032.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-033.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/fyc-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k03/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-034.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-035.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-036.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-037.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-056.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-057.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-058.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-059.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-060.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/fyc-00_4-061.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k04/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-010.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-011.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-012.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-013.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-014.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-015.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-016.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-017.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-018.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-019.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-020.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-021.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-022.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/hy-00_1-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k05/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-038.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-039.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-040.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-041.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-042.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-043.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-044.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-045.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-046.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-047.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-048.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-049.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-050.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-051.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-052.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-053.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/hy-00_2-054.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k06/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-017.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-018.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-019.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-020.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-021.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-022.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-038.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-039.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-040.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-041.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-042.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-043.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/hy-00_3-044.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k07/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-038.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-039.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-040.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-041.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-042.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-043.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-044.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-045.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-046.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-047.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-048.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-049.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-050.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-051.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/hy-00_4-052.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k08/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-005.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-006.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-007.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-008.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-009.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-010.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-011.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-012.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-013.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-014.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-015.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-016.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-017.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-018.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-019.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-020.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-021.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-022.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/rj-00_1-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k09/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-038.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-039.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-040.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-041.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-042.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-043.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-044.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-045.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-046.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-047.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/rj-00_2-048.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k10/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-012.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-013.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-014.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-015.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-016.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-017.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-018.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-019.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-020.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-021.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-022.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/rj-00_3-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k11/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-022.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-023.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-024.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-025.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-026.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-027.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-028.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-029.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-030.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-031.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-032.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-033.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-034.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-035.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-036.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-037.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-038.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-039.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-040.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-041.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-042.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-043.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-044.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-045.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-046.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-047.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/rj-00_4-048.png                 
-Skipping    1bgextract-EMRE/hepsi bir arada/k12/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-038.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-056.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-057.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-058.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-059.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-060.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-061.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-062.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-063.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-064.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k13/xxj-00_1-065.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/Thumbs.db                       
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-039.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-040.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-041.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-042.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-043.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-044.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-045.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-046.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-047.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-048.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-049.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-050.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-051.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-052.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-053.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-054.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-055.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-056.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-057.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-058.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-059.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-060.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-061.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-062.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-063.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-064.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-065.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-066.png                
-Skipping    1bgextract-EMRE/hepsi bir arada/k14/xxj-00_3-067.png                
-Skipping    1bgextract-EMRE/immoment_hu.m                                       
-Skipping    1bgextract-EMRE/moment.m                                            
-Skipping    1bgextract-EMRE/myedge.m                                            
-Skipping    1bgextract-EMRE/myfitellipse.m                                      
-Skipping    1bgextract-EMRE/occlude.m                                           
-Skipping    1bgextract-EMRE/plotellipse.m                                       
-Skipping    1bgextract-EMRE/rgb_norm.m                                          
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e02/xch-00_4-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/nhz-00_1-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e04/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-003.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-004.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-005.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-006.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-007.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-008.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-009.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-010.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-011.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-012.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-013.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-014.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-015.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-016.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-017.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-018.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-019.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-020.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-021.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-022.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-023.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-024.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-025.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-026.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-027.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e06/yjf-00_3-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-007.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-008.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-009.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-010.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-011.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-012.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-013.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-014.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-015.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-016.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-017.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-018.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-019.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-020.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-021.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-022.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-023.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-024.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-025.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-026.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-027.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/lqf-00_3-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e08/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-012.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-013.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-014.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-015.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-016.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-017.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-018.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-019.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-020.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-021.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-022.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-023.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-024.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-025.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-026.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-027.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/ljg-00_3-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e10/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-025.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-026.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-027.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/nhz-00_3-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e12/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e14/xch-00_2-056.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-027.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-028.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-029.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-030.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-031.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/e16/yjf-00_4-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-032.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-033.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-056.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/fyc-00_2-057.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k02/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-034.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-035.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-036.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-037.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-038.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-056.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-057.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-058.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-059.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-060.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/fyc-00_4-061.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k04/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-049.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-050.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-051.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-052.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-053.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/hy-00_2-054.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k06/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-049.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-050.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-051.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/hy-00_4-052.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k08/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/rj-00_2-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k10/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/rj-00_4-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k12/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/Thumbs.db                    
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-039.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-040.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-041.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-042.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-043.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-044.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-045.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-046.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-047.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-048.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-049.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-050.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-051.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-052.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-053.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-054.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-055.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-056.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-057.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-058.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-059.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-060.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-061.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-062.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-063.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-064.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-065.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-066.png             
-Skipping    1bgextract-EMRE/tek cift ayri/cift/k14/xxj-00_3-067.png             
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-005.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-006.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-007.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-008.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-009.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-010.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-011.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-012.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/lqf-00_1-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e01/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-003.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-004.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-005.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-006.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-007.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-008.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-009.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-010.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-011.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-012.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/ljg-00_1-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e03/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-049.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-050.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-051.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-052.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-053.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-054.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/lqf-00_4-055.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e05/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e07/zyf-00_3-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e09/zyf-00_4-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-004.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-005.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-006.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-007.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-008.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-009.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-010.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-011.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-012.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/nhz-00_2-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e11/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-004.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-005.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-006.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-007.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-008.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-009.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-010.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-011.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-012.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/nhz-00_4-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e13/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-002.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-003.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-004.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-005.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-006.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-007.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-008.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-009.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-010.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-011.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-012.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/e15/yjf-00_2-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-013.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-014.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-015.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/fyc-00_1-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k01/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-016.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-017.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-018.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-019.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-020.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-021.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-022.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-023.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-024.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-025.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-026.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-027.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-028.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-029.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-030.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-031.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-032.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-033.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-034.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-035.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-036.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-037.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/fyc-00_3-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k03/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-010.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-011.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-012.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-013.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-014.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-015.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-016.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-017.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-018.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-019.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-020.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-021.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-022.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-023.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-024.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-025.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-026.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-027.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-028.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-029.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-030.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-031.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-032.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-033.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-034.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-035.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/hy-00_1-036.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k05/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-017.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-018.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-019.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-020.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-021.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-022.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-023.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-024.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-025.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-026.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-027.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-028.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-029.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-030.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-031.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-032.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-033.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-034.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-035.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-036.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-037.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-038.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-039.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-040.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-041.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-042.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-043.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/hy-00_3-044.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k07/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-005.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-006.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-007.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-008.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-009.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-010.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-011.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-012.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-013.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-014.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-015.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-016.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-017.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-018.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-019.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-020.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-021.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-022.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-023.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-024.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-025.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-026.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-027.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-028.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/rj-00_1-029.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k09/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-012.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-013.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-014.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-015.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-016.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-017.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-018.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-019.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-020.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-021.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-022.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-023.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-024.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-025.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-026.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-027.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-028.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-029.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-030.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-031.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-032.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-033.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-034.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-035.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-036.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/rj-00_3-037.png               
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k11/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/Thumbs.db                     
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-038.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-039.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-040.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-041.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-042.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-043.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-044.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-045.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-046.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-047.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-048.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-049.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-050.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-051.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-052.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-053.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-054.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-055.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-056.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-057.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-058.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-059.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-060.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-061.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-062.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-063.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-064.png              
-Skipping    1bgextract-EMRE/tek cift ayri/tek/k13/xxj-00_1-065.png              
-1 Failed
+% Convenience variables
+m  = size(x, 2);
+x1 = x(1, :)';
+x2 = x(2, :)';
+
+% Coefficient matrix
+B = [2 * x1 .* x2, x2.^2 - x1.^2, x1, x2, ones(m, 1)];
+
+v = B \ -x1.^2;
+
+% For clarity, fill in the quadratic form variables
+A        = zeros(2);
+A(1,1)   = 1 - v(2);
+A([2 3]) = v(1);
+A(2,2)   = v(2);
+bv       = v(3:4);
+c        = v(5);
+
+% find parameters
+[z, a, b, alpha] = conic2parametric(A, bv, c);
+
+end
+
+
+
+function [z, a, b, alpha, fConverged] = fitnonlinear(x, z0, a0, b0, alpha0, params)
+% Gauss-Newton least squares ellipse fit minimising geometric distance 
+
+% Get initial rotation matrix
+Q0 = [cos(alpha0), -sin(alpha0); sin(alpha0) cos(alpha0)];
+m = size(x, 2);
+
+% Get initial phase estimates
+phi0 = angle( [1 i] * Q0' * (x - repmat(z0, 1, m)) )';
+u = [phi0; alpha0; a0; b0; z0];
+
+% Iterate using Gauss Newton
+fConverged = false;
+for nIts = 1:params.maxits
+    % Find the function and Jacobian
+    [f, J] = sys(u);
+    
+    % Solve for the step and update u
+    h = -J \ f;
+    u = u + h;
+    
+    % Check for convergence
+    delta = norm(h, inf) / norm(u, inf);
+    if delta < params.tol
+        fConverged = true;
+        break
+    end
+end
+        
+alpha = u(end-4);
+a     = u(end-3);
+b     = u(end-2);
+z     = u(end-1:end);
+        
+
+    function [f, J] = sys(u)
+        % SYS : Define the system of nonlinear equations and Jacobian. Nested
+        % function accesses X (but changeth it not)
+        % from the FITELLIPSE workspace
+
+        % Tolerance for whether it is a circle
+        circTol = 1e-5;
+        
+        % Unpack parameters from u
+        phi   = u(1:end-5);
+        alpha = u(end-4);
+        a     = u(end-3);
+        b     = u(end-2);
+        z     = u(end-1:end);
+        
+        % If it is a circle, the Jacobian will be singular, and the
+        % Gauss-Newton step won't work. 
+        %TODO: This can be fixed by switching to a Levenberg-Marquardt
+        %solver
+        if abs(a - b) / (a + b) < circTol
+            warning('fitellipse:CircleFound', ...
+                'Ellipse is near-circular - nonlinear fit may not succeed')
+        end
+        
+        % Convenience trig variables
+        c = cos(phi);
+        s = sin(phi);
+        ca = cos(alpha);
+        sa = sin(alpha);
+        
+        % Rotation matrices
+        Q    = [ca, -sa; sa, ca];
+        Qdot = [-sa, -ca; ca, -sa];
+        
+        % Preallocate function and Jacobian variables
+        f = zeros(2 * m, 1);
+        J = zeros(2 * m, m + 5);
+        for i = 1:m
+            rows = (2*i-1):(2*i);
+            % Equation system - vector difference between point on ellipse
+            % and data point
+            f((2*i-1):(2*i)) = x(:, i) - z - Q * [a * cos(phi(i)); b * sin(phi(i))];
+            
+            % Jacobian
+            J(rows, i) = -Q * [-a * s(i); b * c(i)];
+            J(rows, (end-4:end)) = ...
+                [-Qdot*[a*c(i); b*s(i)], -Q*[c(i); 0], -Q*[0; s(i)], [-1 0; 0 -1]];
+        end
+    end
+end % fitnonlinear
+
+
+
+function [z, a, b, alpha] = conic2parametric(A, bv, c)
+% Diagonalise A - find Q, D such at A = Q' * D * Q
+[Q, D] = eig(A);
+Q = Q';
+
+% If the determinant < 0, it's not an ellipse
+if prod(diag(D)) <= 0 
+    error('fitellipse:NotEllipse', 'Linear fit did not produce an ellipse');
+end
+
+% We have b_h' = 2 * t' * A + b'
+t = -0.5 * (A \ bv);
+
+c_h = t' * A * t + bv' * t + c;
+
+z = t;
+a = sqrt(-c_h / D(1,1));
+b = sqrt(-c_h / D(2,2));
+alpha = atan2(Q(1,2), Q(1,1));
+end % conic2parametric
+
+
+
+
+
+function [x, params] = parseinputs(x, params, varargin)
+% PARSEINPUTS put x in the correct form, and parse user parameters
+
+% CHECK x
+% Make sure x is 2xN where N > 3
+if size(x, 2) == 2
+    x = x'; 
+end
+if size(x, 1) ~= 2
+    error('fitellipse:InvalidDimension', ...
+        'Input matrix must be two dimensional')
+end
+if size(x, 2) < 6
+    error('fitellipse:InsufficientPoints', ...
+        'At least 6 points required to compute fit')
+end
+
+
+% Determine whether we are solving for geometric (nonlinear) or algebraic
+% (linear) distance
+if ~isempty(varargin) && strncmpi(varargin{1}, 'linear', length(varargin{1}))
+    params.fNonlinear = false;
+    varargin(1)       = [];
+else
+    params.fNonlinear = true;
+end
+
+% Parse property/value pairs
+if rem(length(varargin), 2) ~= 0
+    error('fitellipse:InvalidInputArguments', ...
+        'Additional arguments must take the form of Property/Value pairs')
+end
+
+% Cell array of valid property names
+properties = {'constraint', 'maxits', 'tol'};
+
+while length(varargin) ~= 0
+    % Pop pair off varargin
+    property      = varargin{1};
+    value         = varargin{2};
+    varargin(1:2) = [];
+    
+    % If the property has been supplied in a shortened form, lengthen it
+    iProperty = find(strncmpi(property, properties, length(property)));
+    if isempty(iProperty)
+        error('fitellipse:UnknownProperty', 'Unknown Property');
+    elseif length(iProperty) > 1
+        error('fitellipse:AmbiguousProperty', ...
+            'Supplied shortened property name is ambiguous');
+    end
+    
+    % Expand property to its full name
+    property = properties{iProperty};
+    
+    % Check for irrelevant property
+    if ~params.fNonlinear && ismember(property, {'maxits', 'tol'})
+        warning('fitellipse:IrrelevantProperty', ...
+            'Supplied property has no effect on linear estimate, ignoring');
+        continue
+    end
+        
+    % Check supplied property value
+    switch property
+        case 'maxits'
+            if ~isnumeric(value) || value <= 0
+                error('fitcircle:InvalidMaxits', ...
+                    'maxits must be an integer greater than 0')
+            end
+            params.maxits = value;
+        case 'tol'
+            if ~isnumeric(value) || value <= 0
+                error('fitcircle:InvalidTol', ...
+                    'tol must be a positive real number')
+            end
+            params.tol = value;
+        case 'constraint'
+            switch lower(value)
+                case 'bookstein'
+                    params.constraint = 'bookstein';
+                case 'trace'
+                    params.constraint = 'trace';
+                otherwise
+                    error('fitellipse:InvalidConstraint', ...
+                        'Invalid constraint specified')
+            end
+    end % switch property
+end % while
+
+end % parseinputs
