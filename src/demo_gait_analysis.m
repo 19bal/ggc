@@ -4,8 +4,8 @@ dbg = true;
 isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
-dbnm = '.\\hepsi bir arada\\';
-bw_dbnm = strcat(dbnm, 'e01\\');
+dbnm = '../../db/hepsi/';
+bw_dbnm = strcat(dbnm, 'e01/');
 
 if isCreateBW
     bg = bgmodel(dbnm, dbg);
