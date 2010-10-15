@@ -6,5 +6,5 @@
 		   src/
 		   ...
 		db/
-		   cinsiyete gore/
+		   cinsiyet/
 		   ...
