@@ -26,24 +26,13 @@ for f=Nf,
     %%-->
     conf = confC;
     
-    bw = conf2bw(conf, false);
+    bw = conf2bw(conf, dbg);
     
-    srBW = shadow_removal(bw);       
-    bwSilh = bw2silh(srBW);
-    cimg = bwscrop(bwSilh);
-    rimg = bwsresize(cimg);
+    bws = bwsilh(bw, dbg);   
     
-    if dbg,
-        figure(55);
-        subplot(221);   imshow(frm);
-        subplot(222);   imshow(bwSilh);
-        subplot(223);   imshow(cimg);
-        subplot(224);   imshow(rimg);
-    end
-    
-    gifIMG(:,:,1,ind) = rimg;    
+    gifIMG(:,:,1,ind) = bws;    
     ind = ind + 1;
-    imwrite(rimg, strcat(bw_dbnm, imgnm));
+    imwrite(bws, strcat(bw_dbnm, imgnm));
 end
 imwrite(gifIMG, strcat(bw_dbnm, 'anim.gif'), 'DelayTime',0,'LoopCount',inf);
 

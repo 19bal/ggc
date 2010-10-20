@@ -1,6 +1,6 @@
 % demo gait analysis
 clear all; close all;  clc;
-dbg = true;
+dbg = false;
 isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
@@ -24,8 +24,10 @@ for f=1:sz,
     bw = imread(strcat(bw_dbnm, imgnm));
     
     frm(:,:,f) = bw;         
-
-    s = fextract(bw, dbg);
+    
+    bws = bwsilh(bw, dbg);
+    
+    s = fextract(bws, dbg);
     moments(f, :) = cat(1, s.moments);
     W(:, f) = cat(1, s.W);
     H(:, f) = cat(1, s.H);
@@ -36,7 +38,7 @@ for f=1:sz,
     
     if ~dbg,
         figure(11);
-        imshow(bw);        
+        imshow(bws);        
 
         figure(12);  
         subplot(411);   plot(moments(:,1)); title('Hu1');
