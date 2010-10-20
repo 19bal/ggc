@@ -28,13 +28,8 @@ for f=Nf,
     
     bw = conf2bw(conf, false);
     
-    %% shadow removal
-    bw1 = bw; %bw1 = imfill(bw, 'holes');
-    bw2 = imerode(bw1, ones(10));
-    bw3 = imdilate(bw2, ones(30));%strel('line', 55, 90));
-    bw4 = bw1 & bw3;
-       
-    bwSilh = bw2silh(bw4);
+    srBW = shadow_removal(bw);       
+    bwSilh = bw2silh(srBW);
     cimg = bwscrop(bwSilh);
     rimg = bwsresize(cimg);
     

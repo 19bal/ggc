@@ -25,7 +25,7 @@ for f=1:sz,
     
     frm(:,:,f) = bw;         
 
-    s = fextract(bw, dbg);    
+    s = fextract(bw, dbg);
     moments(f, :) = cat(1, s.moments);
     W(:, f) = cat(1, s.W);
     H(:, f) = cat(1, s.H);
