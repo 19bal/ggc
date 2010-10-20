@@ -1,11 +1,11 @@
 % demo gait analysis
 clear all; close all;  clc;
-dbg = false;
+dbg = true;
 isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
 dbnm = '../../db/hepsi/';
-bw_dbnm = strcat(dbnm, 'e01/');
+bw_dbnm = strcat(dbnm, 'k01/');
 
 if isCreateBW
     bg = bgmodel(dbnm, dbg);
@@ -36,7 +36,7 @@ for f=1:sz,
     w(:, f) = cat(1, s.w); % gaTech
     R(:,:, f) = cat(1, s.R); % MIT
     
-    if ~dbg,
+    if dbg,
         figure(11);
         imshow(bws);        
 

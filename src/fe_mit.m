@@ -1,4 +1,4 @@
-% function [R, aR] = fe_mit(bw, dbg);
+function [R, aR] = fe_mit(bw, dbg);
 % function [R, aR] = fe_mit(bw, dbg);
 % 
 % Makale:
