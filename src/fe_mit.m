@@ -1,14 +1,14 @@
-function [R, aR] = fe_mit(bw, dbg);
+% function [R, aR] = fe_mit(bw, dbg);
 % function [R, aR] = fe_mit(bw, dbg);
 % 
 % Makale:
 % 1. Gait Analysis for Recognition and Classification
 % 2. Gender Classification Based on Fusion of Multi-view Gait Sequences
 
-%% pelvis
+%% pelvis: agirlik merkezi
 pPelvis = fe_ppelvis(bw);
 
-%% neck
+%% neck: boyun
 bw1 = imerode(bw, strel('disk', 3));
 L = bwlabel(bw1);
 s = regionprops(L, {'area', 'boundingbox', 'centroid'});
@@ -26,10 +26,10 @@ hY = bbox(hi, 2) + bbox(hi, 4);
 pNeck = mean([hY, bY]); % basa yakin olsun
 % pNeckX = pPelvis(1);
 
-%% knee: yuzdesel al
+%% knee: diz; yuzdesel al
 H = size(bw, 1);
 pf = H - pPelvis(2);
-pKnee = 0.4 * pf + pPelvis(2);
+pKnee = round(0.4 * pf + pPelvis(2));
 % pKneeX = pPelvis(1);
 
 %% regions
