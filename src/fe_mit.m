@@ -1,4 +1,4 @@
-% function [R, aR] = fe_mit(bw, dbg);
+function [R, aR] = fe_mit(bw, dbg);
 % function [R, aR] = fe_mit(bw, dbg);
 % 
 % Makale:
@@ -47,7 +47,7 @@ N{:,:,7} = imcrop(bw, [pPelvis(1),  pKnee,      (W - pPelvis(1)),   (H - pKnee) 
 ri = 1:7;
 for i=ri %1:7,
     bbw = N{:,:,i};
-    %if dbg,subplot(3,3,i), imshow(bbw),end
+    if dbg,figure(51),subplot(3,3,i), imshow(bbw),end
     a = myfitellipse(bbw, dbg);    
     R(i, :) = a;
 end
@@ -65,7 +65,7 @@ aR(7,2) = R(7,2) + pKnee;
 
 if dbg,
     if ~true,
-        figure(44),
+        figure(52),
         subplot(211),   imshow(bw)    
         subplot(212),   imshow(bw1)
 
@@ -75,7 +75,7 @@ if dbg,
         hold off;
     end
     
-    figure(45),
+    figure(53),
     %imshow(zeros(size(bw))); 
     imshow(bw); 
     title('FE-MIT');

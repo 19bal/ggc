@@ -1,5 +1,5 @@
 % demo gait analysis
-clear all; close all;  clc;
+%clear all; close all;  clc;
 warning off all;
 
 dbg = true;
@@ -7,7 +7,7 @@ isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
 dbnm = '../../db/hepsi/';
-bw_dbnm = strcat(dbnm, 'k01/');
+bw_dbnm = strcat(dbnm, 'e01/');
 
 if isCreateBW
     bg = bgmodel(dbnm, dbg);
@@ -18,7 +18,7 @@ DIR = dir(strcat(bw_dbnm, '*.png'));
 sz = length(DIR);
 
 for f=1:sz,
-    if dbg,
+    if ~dbg,
         fprintf('%2d. frame isleniyor\n', f);
     end
     
