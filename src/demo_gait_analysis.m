@@ -7,7 +7,7 @@ isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
 dbnm = '../../db/hepsi/';
-bw_dbnm = strcat(dbnm, 'k01/');
+bw_dbnm = strcat(dbnm, 'e02/');
 bw_dbnm = strrep(bw_dbnm, '/', filesep);
 
 if isCreateBW

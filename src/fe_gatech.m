@@ -5,14 +5,7 @@ function w = fe_gatech(bw, dbg)
 pPelvis = fe_ppelvis(bw);
 
 %% head
-% morph:dilation/erosion ile incelt
-bw1 = imerode(bw, strel('disk', 3));
-
-L = bwlabel(bw1);
-s = regionprops(L, 'centroid');
-centroids = cat(1, s.Centroid);
-[y, i] = min(centroids(:, 2));
-pHead = round(centroids(i, :));
+pHead = round(fe_phead(bw, false));
 
 %% lfoot - rfoot
 [H, W] = size(bw);
