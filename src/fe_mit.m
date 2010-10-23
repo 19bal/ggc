@@ -9,7 +9,7 @@ function [R, aR] = fe_mit(bw, dbg);
 pPelvis = fe_ppelvis(bw);
 
 %% neck: boyun
-pNeck = fe_pneck(bw, dbg);
+pNeck = fe_pneck(bw, false);
 % pNeckX = pPelvis(1);
 
 %% knee: diz; yuzdesel al
@@ -47,7 +47,7 @@ N{:,:,7} = imcrop(bw, [pPelvis(1),  pKnee,      (W - pPelvis(1)),   (H - pKnee) 
 ri = 1:7;
 for i=ri %1:7,
     bbw = N{:,:,i};
-    if dbg,figure(51),subplot(3,3,i), imshow(bbw),end
+    if false,figure(51),subplot(3,3,i), imshow(bbw),end
     a = myfitellipse(bbw, dbg);    
     R(i, :) = a;
 end
@@ -64,7 +64,7 @@ aR(7,1) = R(7,1) + pPelvis(1);
 aR(7,2) = R(7,2) + pKnee;
 
 if dbg,
-    if ~true,
+    if false,
         figure(52),
         subplot(211),   imshow(bw)    
         subplot(212),   imshow(bw1)

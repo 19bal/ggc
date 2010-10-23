@@ -7,7 +7,7 @@ isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
 dbnm = '../../db/hepsi/';
-bw_dbnm = strcat(dbnm, 'e01/');
+bw_dbnm = strcat(dbnm, 'k01/');
 bw_dbnm = strrep(bw_dbnm, '/', filesep);
 
 if isCreateBW
@@ -19,7 +19,7 @@ DIR = dir(strcat(bw_dbnm, '*.png'));
 sz = length(DIR);
 
 for f=1:sz,
-    if ~dbg,
+    if dbg,
         fprintf('%2d. frame isleniyor\n', f);
     end
     
@@ -28,7 +28,7 @@ for f=1:sz,
     
     frm(:,:,f) = bw;         
     
-    bws = bwsilh(bw, dbg);
+    bws = bwsilh(bw, false);
     
     s = fextract(bws, dbg);
     moments(f, :) = cat(1, s.moments);
@@ -39,7 +39,7 @@ for f=1:sz,
     w(:, f) = cat(1, s.w); % gaTech
     R(:,:, f) = cat(1, s.R); % MIT
     
-    if dbg,
+    if false,
         figure(11);
         imshow(bws);        
 
@@ -51,14 +51,14 @@ for f=1:sz,
         drawnow;
     end
 
-    if ~dbg,
+    if false,
         drawnow
         ffrm = getframe();
         [X, map] = rgb2ind(frame2im(ffrm), 256);
         gifIMG(:,:,1,f) = X;
     end
 end
-if ~dbg
+if false
     imwrite(gifIMG, map, 'anim_mit.gif', 'DelayTime',0,'LoopCount',inf);
 end
 
@@ -68,7 +68,7 @@ cfrm = cycle_crop(frm, W, false);
 gei = mean(double(cfrm), 3);
 gei = uint8(gei * 255); % normalization: 0-255
 
-if dbg,
+if false,
     figure(13);
     imshow(gei);    title('Gait Energy Image');
 end
