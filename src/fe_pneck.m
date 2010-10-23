@@ -4,6 +4,11 @@ bw4 = bw(1:size(bw,1)/4, :);
 
 bw4 = imfill(bw4, 'holes');
 
+L = bwlabel(bw4);
+s = regionprops(L, 'centroid');
+cent = round(cat(1, s.Centroid));
+bw4 = bw4(:,1:cent(1));
+
 t = sum(bw4');
 mx = max(t);
 
