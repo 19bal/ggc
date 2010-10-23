@@ -1,4 +1,4 @@
-function [R, aR] = fe_mit(bw, dbg);
+% function [R, aR] = fe_mit(bw, dbg);
 % function [R, aR] = fe_mit(bw, dbg);
 % 
 % Makale:
@@ -9,7 +9,7 @@ function [R, aR] = fe_mit(bw, dbg);
 pPelvis = fe_ppelvis(bw);
 
 %% neck: boyun
-pNeck = fe_pneck(bw);
+pNeck = fe_pneck(bw, dbg);
 % pNeckX = pPelvis(1);
 
 %% knee: diz; yuzdesel al
