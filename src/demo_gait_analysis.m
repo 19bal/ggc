@@ -1,11 +1,13 @@
 % demo gait analysis
 clear all; close all;  clc;
+warning off all;
+
 dbg = true;
 isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
 dbnm = '../../db/hepsi/';
-bw_dbnm = strcat(dbnm, 'e01/');
+bw_dbnm = strcat(dbnm, 'k01/');
 
 if isCreateBW
     bg = bgmodel(dbnm, dbg);
