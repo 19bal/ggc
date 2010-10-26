@@ -10,7 +10,7 @@
 		   ...
 
 - Tek Yönlü Veritabanı oluşturuldu.
-   https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/tyDB.rar?attredirects=0&d=1
+   [tyDB](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/tyDB.rar?attredirects=0&d=1)
 
 - Aynı dizindeki tüm resimleri simetrikleştirme kodu yazıldı.
-   https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/ters.m?attredirects=0&d=1
+   [ters](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/ters.m?attredirects=0&d=1)
