@@ -13,4 +13,4 @@
 
 - Aynı dizindeki tüm resimleri [simetrikleştirme kodu](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/ters.m?attredirects=0&d=1) yazıldı.
 
-- sites.bil.omu.edu.tr üzerindeki "egurbuz" sitesinde tutulan bu dokümanlara erişim izni için @nurettin hocama ve @erdem e yetki verildi. [Sitedeki](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/) [Dosya](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya) bölümüne yeni dosyalar eklemek de mümkün olmaktadır.
+- sites.bil.omu.edu.tr üzerindeki [egurbuz](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/) sitesinde tutulan bu dokümanlara erişim izni için @nurettin hocama ve @erdem e yetki verildi. Sitedeki [Dosya](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya) bölümüne yeni dosyalar eklemek de mümkün olmaktadır.
