@@ -14,3 +14,5 @@
 
 - Aynı dizindeki tüm resimleri simetrikleştirme kodu yazıldı.
    [ters](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/ters.m?attredirects=0&d=1)
+
+- sites.bil.omu.edu.tr üzerindeki "egurbuz" sitesinde tutulan bu dokümanlara erişim izni için @nurettin hocama ve @erdem e yetki verildi. sitedeki "Dosya" bölümüne yeni dosyalar eklemek de mümkün olmaktadır.
