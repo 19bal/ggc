@@ -3,8 +3,11 @@ function rimg = bwsresize(bws)
 % 
 % bws resmini 64x64'lik kare resme kucult
 % bws'nin yuksekligi 64 olacak sekilde olcekle.
-rimg = imresize(bws, [64, NaN]);
-
+%if version('-release') < '2008a'
+rimg = imresize(bws, 64/size(bws, 1));
+%else
+%rimg = imresize(bws, [64, NaN]);
+%end
 L = bwlabel(rimg);
 s = regionprops(L,'centroid');
 centroids = round(cat(1, s.Centroid));

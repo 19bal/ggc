@@ -9,21 +9,7 @@
 pPelvis = fe_ppelvis(bw);
 
 %% neck: boyun
-bw1 = imerode(bw, strel('disk', 3));
-L = bwlabel(bw1);
-s = regionprops(L, {'area', 'boundingbox', 'centroid'});
-areas = cat(1, s.Area);
-bbox  = cat(1, s.BoundingBox);
-centroids = cat(1, s.Centroid);
-
-% body: buyuk alanli olan
-[t, bi] = max(areas);
-% head: merkez.Y'si en kucuk olan
-[t, hi] = min(centroids(:, 2));
-
-bY = bbox(bi, 2);
-hY = bbox(hi, 2) + bbox(hi, 4);
-pNeck = mean([hY, bY]); % basa yakin olsun
+pNeck = fe_pneck(bw, false);
 % pNeckX = pPelvis(1);
 
 %% knee: diz; yuzdesel al
@@ -61,6 +47,7 @@ N{:,:,7} = imcrop(bw, [pPelvis(1),  pKnee,      (W - pPelvis(1)),   (H - pKnee) 
 ri = 1:7;
 for i=ri %1:7,
     bbw = N{:,:,i};
+    if false,figure(51),subplot(3,3,i), imshow(bbw),end
     a = myfitellipse(bbw, dbg);    
     R(i, :) = a;
 end
@@ -77,8 +64,8 @@ aR(7,1) = R(7,1) + pPelvis(1);
 aR(7,2) = R(7,2) + pKnee;
 
 if dbg,
-    if ~true,
-        figure(44),
+    if false,
+        figure(52),
         subplot(211),   imshow(bw)    
         subplot(212),   imshow(bw1)
 
@@ -88,7 +75,7 @@ if dbg,
         hold off;
     end
     
-    figure(45),
+    figure(53),
     %imshow(zeros(size(bw))); 
     imshow(bw); 
     title('FE-MIT');
