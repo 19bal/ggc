@@ -1,5 +1,5 @@
 % demo gait analysis
-%clear all; close all;  clc;
+clear all; close all;  clc;
 warning off all;
 
 dbg = true;
