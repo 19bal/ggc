@@ -1,12 +1,13 @@
+function dataset(dbnm, dbg)
 % demo gait analysis
-%clear all; close all;  clc;
-warning off all;
+% clear all; close all;  clc;
+% warning off all;
 
-dbg = true;
+%dbg = true;
 isCreateBW = false;
 
 % % dbnm = strcat(DB_ROOT(), 'gait/soton/');
-dbnm = '../../db/hepsi/';
+%dbnm = '../../db/hepsi/';
 
 e = dir(pathos(strcat(dbnm, 'e*')));
 k = dir(pathos(strcat(dbnm, 'k*')));
@@ -124,5 +125,3 @@ C = CG; C(:, i+1) = CC; % nitelik-sinif bir arada C' nin icerisinde.
 
 dlmwrite(pathos(strcat(dbnm, 'ds/dataset.bak')), CG, ',');
 dlmwrite(pathos(strcat(dbnm, 'ds/dsclass.bak')), CC, ',');
-
-lvq_emre();
