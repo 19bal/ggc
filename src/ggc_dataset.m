@@ -1,4 +1,4 @@
-function dataset(dbnm, dbg)
+function ggc_dataset(dbnm, dbg)
 % demo gait analysis
 % clear all; close all;  clc;
 % warning off all;
