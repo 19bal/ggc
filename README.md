@@ -9,7 +9,7 @@
 		   cinsiyet/
 		   ...
 
-- [Tek Yönlü Veritabanı](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/tyDB.rar?attredirects=0&d=1) oluşturuldu.
+- [Tek Yönlü Veritabanı](https://github.com/downloads/19bal/ggc/tyDB.rar) oluşturuldu.
 
 - Aynı dizindeki tüm resimleri [simetrikleştirme kodu](https://sites.google.com/a/bil.omu.edu.tr/egurbuz/dosya/ters.m?attredirects=0&d=1) yazıldı.
 

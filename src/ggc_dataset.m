@@ -1,73 +1,19 @@
-function ggc_dataset(dbnm, dbg)
-% demo gait analysis
-% clear all; close all;  clc;
-% warning off all;
+% function ggc_dataset(dbnm, dbg)
+% function ggc_dataset(dbnm, dbg)
+% 
+% GGC data setini uretir
 
-%dbg = true;
-isCreateBW = false;
+%frm(:,:,f) = bw;
 
-% % dbnm = strcat(DB_ROOT(), 'gait/soton/');
-%dbnm = '../../db/hepsi/';
+dbnm_silh = pathos('_db/silh/');
+dbnm_ccrop = pathos('_db/ccrop/');
+dbnm_features = pathos('_db/features/');
 
-e = dir(pathos(strcat(dbnm, 'e*')));
-k = dir(pathos(strcat(dbnm, 'k*')));
-ek = cat(1, e, k);
-ds = size(ek);
+db_bw2silh(dbnm, dbnm_silh, dbg);
+db_silh2ccrop(dbnm_silh, dbnm_ccrop, dbg);
+features = db_ccrop2features(dbnm_ccrop, dbnm_features, dbg);
 
-for d=1:ds,
-    dnm = ek(d).name;
-    if dbg, fprintf('dir nm: %s\n', dnm);   end
-    bw_dbnm = pathos(strcat(dbnm, dnm, '/'));
-
-    if isCreateBW
-        bg = bgmodel(dbnm, dbg);
-        bw_dbnm = frm2bw_db(dbnm, bg, dbg);
-    end
-
-    DIR = dir(strcat(bw_dbnm, '*.png'));
-    sz = length(DIR);
-
-    for f=1:sz,
-        if dbg, fprintf('\t%2d. frame isleniyor\n', f); end
-
-        imgnm = DIR(f).name;    
-        bw = imread(strcat(bw_dbnm, imgnm));
-
-        frm(:,:,f) = bw;         
-
-        bws = bwsilh(bw, false);
-
-        s = fextract(bws, dbg);
-        moments(f, :) = cat(1, s.moments);
-        W(:, f) = cat(1, s.W);
-        H(:, f) = cat(1, s.H);
-        angles(:, f) = cat(1, s.angle);
-        areas(:, f)  = cat(1, s.area);
-        w(:, f) = cat(1, s.w); % gaTech
-        R(:,:, f) = cat(1, s.R); % MIT
-
-        if false,
-            figure(11);
-            imshow(bws);        
-
-            figure(12);  
-            subplot(411);   plot(moments(:,1)); title('Hu1');
-            subplot(412);   plot(moments(:,2)); title('Hu2');
-            subplot(413);   plot(moments(:,3)); title('Hu8');
-            subplot(414);   plot(W);        
-            drawnow;
-        end
-
-        if false,
-            drawnow
-            ffrm = getframe();
-            [X, map] = rgb2ind(frame2im(ffrm), 256);
-            gifIMG(:,:,1,f) = X;
-        end
-    end
-    if false
-        imwrite(gifIMG, map, 'anim_mit.gif', 'DelayTime',0,'LoopCount',inf);
-    end
+return
 
     % Gait Energy Image
     cfrm = cycle_crop(frm, W, false);
@@ -106,7 +52,7 @@ for d=1:ds,
         CC(d) = -1;
     end
     CC = CC';
-end
+%end
 
 % 0 ile 1 arasinda normalizasyon
 for i=1:size(CG, 2)

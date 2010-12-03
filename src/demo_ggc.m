@@ -1,5 +1,5 @@
 dbg = true;
-dbnm = '../../db/hepsi/';
+dbnm = '../../db/ty/hepsi/';
 
 ggc_dataset(dbnm, dbg);
 
