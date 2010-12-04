@@ -15,5 +15,5 @@ curdir = pwd;
     dnm = pathos('_bkp/');
     mkdir(dnm);
     cd(dnm);
-    save model_svm net
+    save model_svm model
 cd(curdir);
