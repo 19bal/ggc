@@ -60,7 +60,8 @@ else
     end
 
     curdir = pwd;
-    cd(dbnm_features);
-    save features.mat features
+        mkdir(dbnm_features);
+        cd(dbnm_features);
+        save features.mat features
     cd(curdir);
 end
