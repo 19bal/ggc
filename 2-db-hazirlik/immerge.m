@@ -1,5 +1,7 @@
 function bwm = immerge(bws, dbg)
 % function bwm = immerge(bws, dbg)
+%
+% bw "bws" resmindeki nesneleri en buyuk olana baglar
 
 % 1. kopuk parcalari birlestir
 dip_initialise('silent');
