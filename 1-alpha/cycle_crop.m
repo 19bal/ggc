@@ -4,8 +4,14 @@ function [cS, cE] = cycle_crop(W, dbg)
 y = sgolayfilt(W, 0, 3);
 [ymax2,imax2,ymin2,imin2] = extrema(y);
 
-cS = min(imin2(1), imin2(3));
-cE = max(imin2(1), imin2(3));
+if length(imin2) >= 3
+    cS = min(imin2(1), imin2(3));
+    cE = max(imin2(1), imin2(3));
+else
+    % FIX ME:
+    cS = 1;
+    cE = length(W);
+end
 
 if dbg,
     figure(55);

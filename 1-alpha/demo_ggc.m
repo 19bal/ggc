@@ -1,6 +1,6 @@
 clear all;  close all;  clc;
 warning off all
-dbg = false;
+dbg = true;
 
 dbnm = pathos('../../db/ty/hepsi/');
 dbnm_ds = pathos('_db/ds/');
