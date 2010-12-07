@@ -2,11 +2,13 @@ clear all;  close all;  clc;
 
 dbg = true;
 
-dbnm = pathos('../../db/silhouettes/fyc/00_1/');
+dbnm = pathos('../../db/silhouettes/');
 dbnm_silh = pathos('_db/silh/');
+dbnm_64x64 = pathos('_db/64x64/');
 
 db_orj2silh(dbnm, dbnm_silh, dbg);
-
+db_in2out(@bwsilh, dbnm_silh, dbnm_64x64, dbg);
+return
 DIR = dir(strcat(dbnm_silh, '*.png'));
 sz = length(DIR);
 
