@@ -18,7 +18,7 @@ data.Etiket = {'E', 'K'};
 
 y = svmclass(data.X, model);
 
-if dbg, Etiket = [data.Etiket(data.y'); data.Etiket(y')]',  end
+%if dbg, Etiket = [data.Etiket(data.y'); data.Etiket(y')]',  end
 
 err = mean(abs(data.y - y).^2);
 perf = sum((data.y - y) == 0) / length(y);
