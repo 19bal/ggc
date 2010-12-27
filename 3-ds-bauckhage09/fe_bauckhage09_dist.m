@@ -1,6 +1,9 @@
 function Dist = fe_bauckhage09_dist(bw, nr, nc, dbg);
 % function Dist = fe_bauckhage09_dist(bw, nr, nc, dbg);
 
+bw2 = imcrop(bw, bobox(bw));
+bw = imresize(bw2, [350 NaN]);
+
 BB = fe_bauckhage09(bw, nr, nc, dbg, false);
 
 [R, C, t] = size(BB);
