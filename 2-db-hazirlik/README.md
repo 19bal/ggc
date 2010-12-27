@@ -7,3 +7,8 @@ Bekleyen/çözülecek problemler,
 - insan dışı nesnelere ait piksel eleme
 
 - siluetteki eksik bolgeleri tamamlama/boslukları doldurma/kopuklukları birleştirme
+
+## incele
+
+- http://www.csse.uwa.edu.au/~pk/Research/MatlabFns/LineSegments/edgelink.m
+- http://www.csse.uwa.edu.au/~pk/Research/MatlabFns/
