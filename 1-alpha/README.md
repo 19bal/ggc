@@ -1,4 +1,4 @@
-bu çalışmada kullanıln databaseler
+bu çalışmada kullanılan databaseler
 
 - Orjinal [Veritabanı](http://github.com/downloads/19bal/gaitEmre/db.tar.gz)
 
