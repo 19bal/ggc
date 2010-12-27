@@ -19,4 +19,4 @@ orient  = orient(i);
 a(1:2) = centroids;
 a(3)   = majorAL;
 a(4)   = minorAL;
-a(5)   = -deg2rad(orient);
+a(5)   = deg2rad(orient);
