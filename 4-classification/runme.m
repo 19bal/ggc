@@ -3,7 +3,7 @@ warning off all
 dbg = true;
 
 fprintf('LVQ - SVM\n');
-fprintf(' ct | trn | tst || ct | trn | tst |\n');
+fprintf('   ct  | trn | tst ||   ct   | trn | tst |\n');
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 % % % % % % emre
 dbnm_ds = pathos('_ds/emre/');
@@ -20,9 +20,9 @@ dbnm_ds = pathos('_ds/emre/');
         [svm_trn, svm_tst] = ggc_svm_test(dbnm_ds, dbg);
         ct_svm = toc;                    % computation time
 
-        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d \t%s\n', ...
-            ct_lvq, max(lvq_trn.err)*100, max(lvq_tst.err)*100, ...
-            ct_svm, max(svm_trn.err)*100, max(svm_tst.err)*100, dbnm_ds);
+        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d |\t%s\n', ...
+            ct_lvq, max(lvq_trn.perf)*100, max(lvq_tst.perf)*100, ...
+            ct_svm, max(svm_trn.perf)*100, max(svm_tst.perf)*100, dbnm_ds);
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 
 % % % % % % bauckhage09
@@ -40,9 +40,9 @@ dbnm_ds = pathos('_ds/bauckhage09/');
         [svm_trn, svm_tst] = ggc_svm_test(dbnm_ds, dbg);
         ct_svm = toc;                    % computation time
         
-        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d \t%s\n', ...
-            ct_lvq, max(lvq_trn.err)*100, max(lvq_tst.err)*100, ...
-            ct_svm, max(svm_trn.err)*100, max(svm_tst.err)*100, dbnm_ds);
+        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d |\t%s\n', ...
+            ct_lvq, max(lvq_trn.perf)*100, max(lvq_tst.perf)*100, ...
+            ct_svm, max(svm_trn.perf)*100, max(svm_tst.perf)*100, dbnm_ds);
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
 
 % % % % % % bauckhage09
@@ -60,8 +60,8 @@ dbnm_ds = pathos('_ds/felez10/');
         [svm_trn, svm_tst] = ggc_svm_test(dbnm_ds, dbg);
         ct_svm = toc;                    % computation time
 
-        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d \t%s\n', ...
-            ct_lvq, max(lvq_trn.err)*100, max(lvq_tst.err)*100, ...
-            ct_svm, max(svm_trn.err)*100, max(svm_tst.err)*100, dbnm_ds);
+        fprintf('%6.3f | %03d | %03d || %6.3f | %03d | %03d |\t%s\n', ...
+            ct_lvq, max(lvq_trn.perf)*100, max(lvq_tst.perf)*100, ...
+            ct_svm, max(svm_trn.perf)*100, max(svm_tst.perf)*100, dbnm_ds);
         
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
