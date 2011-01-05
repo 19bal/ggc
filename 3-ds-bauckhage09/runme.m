@@ -27,7 +27,7 @@ for d=1:ds,
         bw = imread(strcat(dfnm_ccrop, imgnm));
 
         Dist = fe_bauckhage09_dist(bw, nr, nc, dbg);
-        seg = fe_b2yu09(Dist', nr, nc, dbg);
+        seg = fe_b2yu09(Dist, nr, nc, dbg);
         
         DistN_bau(f, :) = Dist;
         DistN_our(f, :) = struct2array(seg);

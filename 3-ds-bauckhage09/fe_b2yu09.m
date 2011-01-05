@@ -1,15 +1,21 @@
 function seg = fe_b2yu09(dist, R, C, dbg)
 % function seg = fe_b2yu09(dist, R, C, dbg)
 % 
+%  fe_bauckhage09_dist'in urettigi vektoru alip, [yu09] segmenlarini elde
+% eder ve bu sirada [jang05]'in agirliklandirmasini hesaba katar.
+% 
 % Ilgili makaleler
 % 
 % 1. bauckhage09
 % 2. yu09
 % 3. jang05
+% 
+% See also: fe_bauckhage09_dist
+
 
 % % dist'in son elemani "global normalizasyon faktoru-centroid:y/H"
-% gn = dist(end);
-% dist = dist(1:end-1)';
+gn = dist(end);
+dist = dist(1:end-1)';
 
 %% A) [jang05] nin segmenlari
 % segmen y-koordinat degerleri
@@ -66,6 +72,7 @@ for i=1:sz
     seg = setfield(seg, char(snm(i)), t2);
 end
 
+seg.gn = gn;
 
 
 
