@@ -1,6 +1,6 @@
 clear all;  close all;  clc;
 warning off all
-dbg = false;
+dbg = true;
 
 nr = 8;
 nc = 6;
