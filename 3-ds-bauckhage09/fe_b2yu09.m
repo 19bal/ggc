@@ -1,4 +1,4 @@
-clc; close all;
+function seg = fe_b2yu09(dist, R, C, dbg)
 % function seg = fe_b2yu09(dist, R, C, dbg)
 % 
 % Ilgili makaleler
@@ -51,12 +51,19 @@ seg.waist = s;
 seg.legs = dist((C + y_waist - 2 + h + 1):(end - 2 - h - 1));
 
 %% B) sirali ozdegerler 
+% [jang05] in skorlari
+score = [4.71 3.93 2.07 1.86 2.57];
+N = length(struct2array(seg));
+nos = round(N * score / sum(score));
+
 snm = fieldnames(seg);
 
+userpath('clear');      % resample @dipimage ile cakisiyor.
 sz = length(snm);
 for i=1:sz
-    t = seg.(char(snm(i)));
-    [a, b] = princomp(t')
+    t = getfield(seg, char(snm(i)));
+    t2 = resample(t, nos(i), length(t));
+    seg = setfield(seg, char(snm(i)), t2);
 end
 
 

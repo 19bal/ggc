@@ -5,8 +5,9 @@ dbg = true;
 nr = 8;
 nc = 6;
 
-dbnm_ccrop = pathos('_db/ccrop/');    
-dbnm_ds    = pathos('_db/ds/');
+dbnm_ccrop  = pathos('_db/ccrop/');    
+dbnm_ds_bau = pathos('_db/ds/bau/');
+dbnm_ds_our = pathos('_db/ds/our/');
 
 dDIR = cat(1, dir(pathos(strcat(dbnm_ccrop, 'e*'))), ...
 dir(pathos(strcat(dbnm_ccrop, 'k*'))));
@@ -26,7 +27,10 @@ for d=1:ds,
         bw = imread(strcat(dfnm_ccrop, imgnm));
 
         Dist = fe_bauckhage09_dist(bw, nr, nc, dbg);
-        DistN(f, :) = Dist;
+        seg = fe_b2yu09(Dist', nr, nc, dbg);
+        
+        DistN_bau(f, :) = Dist;
+        DistN_our(f, :) = struct2array(seg);
         
         if dbg,
             figure(21);
@@ -34,8 +38,8 @@ for d=1:ds,
         end
     end
 
-    mn = mean(DistN, 1);
-    st = std(DistN, [], 1);
+    mn_bau = mean(DistN_bau, 1);    st_bau = std(DistN_bau, [], 1);
+    mn_our = mean(DistN_our, 1);    st_our = std(DistN_our, [], 1);
     
     if dnm(1) == 'e'
         y = 0;
@@ -45,10 +49,11 @@ for d=1:ds,
         y = -1;
     end
     
-    data(d).dnm = dnm;
-    data(d).X = [mn st];
-    data(d).y = y;
+    data_bau(d).dnm = dnm;                  data_our(d).dnm = dnm;
+    data_bau(d).X = [mn_bau st_bau];        data_our(d).X = [mn_our st_our];
+    data_bau(d).y = y;                      data_our(d).y = y;
     
 end
 
-data_sets(data, dbnm_ds, dbg);
+data_sets(data_bau, dbnm_ds_bau, dbg);
+data_sets(data_our, dbnm_ds_our, dbg);
