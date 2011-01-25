@@ -2,7 +2,7 @@ clear all;  close all;  clc;
 warning off all
 dbg = true;
 
-dbnm = pathos('../../db/ty/hepsi/');
+dbnm = pathos('../../db/ty/hepsi/');    % https://github.com/downloads/19bal/ggc/ty.zip
 dbnm_ds = pathos('_db/ds/');
 
 % create dataset

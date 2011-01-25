@@ -1,4 +1,14 @@
-1. indir
+1. indir: [ty db](https://github.com/downloads/19bal/ggc/ty.zip) yi indir ve şu
+   formatta dizin ağacını oluştur:
+
+	ggc/a/1-alpha/runme.m
+	             |
+                 /...
+	ggc/db/ty/hepsi/e01/lqf-00_1-007.png
+	         |     |   |
+	         |     |   /...
+			 |	   /...
+			 /...
 
 2. çalıştır: `runme.m`
 
