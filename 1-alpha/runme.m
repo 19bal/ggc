@@ -1,22 +1,21 @@
-% bauckhage09 - demo
+clear all;  close all;  clc;
+warning off all
 dbg = true;
-nr = 8;
-nc = 6;
 
-dbnm = pathos('_db/silh/e01/');
-DIR = dir(strcat(dbnm, '*.png'));
-sz = length(DIR);
+dbnm = pathos('../../db/ty/hepsi/');
+dbnm_ds = pathos('_db/ds/');
 
-for f=1:sz
-    if dbg, fprintf('%d. frame isleniyor\n', f);    end
-    bws = imread(strcat(dbnm, DIR(f).name));
-    
-    bws = imresize(bws, 2);
-    
-    BB = fe_bauckhage09(bws, nr, nc, true, false);
-    
-    if dbg
-        figure(1),  imshow(bws);
-        drawnow
-    end
-end
+% create dataset
+ggc_dataset(dbnm, dbg);
+
+% LVQ
+tic;
+ggc_lvq_train(dbnm_ds, dbg);
+[lvq_trn, lvq_tst] = ggc_lvq_test(dbnm_ds, dbg)
+ct_lvq = toc                    % computation time
+
+% SVM
+tic;
+ggc_svm_train(dbnm_ds, dbg);
+[svm_trn, svm_tst] = ggc_svm_test(dbnm_ds, dbg)
+ct_svm = toc                    % computation time

@@ -1,3 +1,9 @@
+1. indir
+
+2. çalıştır: `runme.m`
+
+## Diğer
+
 bu çalışmada kullanılan databaseler
 
 - Orjinal [Veritabanı](http://github.com/downloads/19bal/gaitEmre/db.tar.gz)
